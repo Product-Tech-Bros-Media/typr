@@ -2,11 +2,12 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use typr_lib::audio;
 use typr_lib::downloader;
+use typr_lib::history::{self, HistoryEntry};
 use typr_lib::recorder::{Recorder, RecordingState};
 use typr_lib::settings::Settings;
 use typr_lib::transcribe_local;
@@ -29,9 +30,22 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
+fn save_settings(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    settings: Settings,
+) -> Result<(), String> {
+    let prev = state.settings.lock().unwrap().clone();
     settings.save(&state.app_dir)?;
-    *state.settings.lock().unwrap() = settings;
+    *state.settings.lock().unwrap() = settings.clone();
+
+    let ttl_changed = prev.history_ttl_enabled != settings.history_ttl_enabled
+        || prev.history_ttl_days != settings.history_ttl_days;
+    if ttl_changed && settings.history_ttl_enabled {
+        let ttl_secs = settings.history_ttl_days as u64 * 86_400;
+        let entries = history::prune_expired(&state.app_dir, ttl_secs);
+        let _ = app.emit("history-updated", entries);
+    }
     Ok(())
 }
 
@@ -61,6 +75,42 @@ async fn download_model(
     let model_file = transcribe_local::model_filename(&model_size);
     let dest = state.app_dir.join(&model_file);
     downloader::download_model(app, &url, &dest).await
+}
+
+#[tauri::command]
+fn get_history(state: State<AppState>) -> Vec<HistoryEntry> {
+    let settings = state.settings.lock().unwrap().clone();
+    if settings.history_ttl_enabled {
+        let ttl_secs = settings.history_ttl_days as u64 * 86_400;
+        history::prune_expired(&state.app_dir, ttl_secs)
+    } else {
+        history::load(&state.app_dir)
+    }
+}
+
+#[tauri::command]
+fn copy_history_entry(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_history_entry(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    id: u64,
+) -> Result<(), String> {
+    let entries = history::delete(&state.app_dir, id);
+    let _ = app.emit("history-updated", entries);
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_history(state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    history::clear(&state.app_dir)?;
+    let _ = app.emit("history-updated", Vec::<HistoryEntry>::new());
+    Ok(())
 }
 
 #[tauri::command]
@@ -118,6 +168,10 @@ fn main() {
             check_model_downloaded,
             download_model,
             toggle_recording,
+            get_history,
+            copy_history_entry,
+            delete_history_entry,
+            clear_history,
         ])
         .setup(move |app| {
             // Create the overlay window (small mic icon, top-right, always on top)

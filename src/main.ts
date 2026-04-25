@@ -9,6 +9,8 @@ interface Settings {
   groqApiKey: string;
   recordingMode: string;
   hotkey: string;
+  historyTtlEnabled: boolean;
+  historyTtlDays: number;
 }
 
 interface MicDevice {
@@ -20,6 +22,12 @@ interface DownloadProgress {
   downloaded: number;
   total: number;
   percent: number;
+}
+
+interface HistoryEntry {
+  id: number;
+  text: string;
+  timestamp_ms: number;
 }
 
 // DOM elements
@@ -38,6 +46,13 @@ const groqKey = document.getElementById("groq-key") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
+const historyList = document.getElementById("history-list")!;
+const historyEmpty = document.getElementById("history-empty")!;
+const clearHistoryBtn = document.getElementById("clear-history-btn")!;
+const ttlOff = document.getElementById("ttl-off")!;
+const ttlOn = document.getElementById("ttl-on")!;
+const ttlDurationRow = document.getElementById("ttl-duration-row")!;
+const ttlDays = document.getElementById("ttl-days") as HTMLSelectElement;
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -99,6 +114,17 @@ async function loadSettings() {
 
   // Hotkey
   hotkeyText.textContent = currentSettings.hotkey.replace("CmdOrCtrl", "Cmd");
+
+  // History TTL
+  setHistoryTtlEnabled(currentSettings.historyTtlEnabled);
+  ttlDays.value = String(currentSettings.historyTtlDays);
+}
+
+function setHistoryTtlEnabled(enabled: boolean) {
+  currentSettings.historyTtlEnabled = enabled;
+  ttlOff.classList.toggle("active", !enabled);
+  ttlOn.classList.toggle("active", enabled);
+  ttlDurationRow.classList.toggle("hidden", !enabled);
 }
 
 function setEngine(engine: string) {
@@ -127,6 +153,7 @@ async function saveSettings() {
   currentSettings.microphone = micSelect.value;
   currentSettings.whisperModel = modelSelect.value;
   currentSettings.groqApiKey = groqKey.value;
+  currentSettings.historyTtlDays = Number(ttlDays.value);
   await invoke("save_settings", { settings: currentSettings });
 }
 
@@ -176,6 +203,126 @@ modePtt.addEventListener("click", () => {
   saveSettings();
 });
 
+ttlOff.addEventListener("click", () => {
+  setHistoryTtlEnabled(false);
+  saveSettings();
+});
+
+ttlOn.addEventListener("click", () => {
+  setHistoryTtlEnabled(true);
+  saveSettings();
+});
+
+ttlDays.addEventListener("change", () => saveSettings());
+
+async function loadHistory() {
+  const entries = await invoke<HistoryEntry[]>("get_history");
+  renderHistory(entries);
+}
+
+function formatTimestamp(ms: number): string {
+  return new Date(ms).toLocaleString();
+}
+
+function renderHistory(entries: HistoryEntry[]) {
+  historyList.innerHTML = "";
+
+  if (entries.length === 0) {
+    historyEmpty.classList.remove("hidden");
+    return;
+  }
+  historyEmpty.classList.add("hidden");
+
+  // Newest first
+  const sorted = [...entries].sort((a, b) => b.timestamp_ms - a.timestamp_ms);
+
+  for (const entry of sorted) {
+    const item = document.createElement("div");
+    item.className = "history-item";
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.textContent = formatTimestamp(entry.timestamp_ms);
+
+    const text = document.createElement("div");
+    text.className = "history-text";
+    text.textContent = entry.text;
+
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn-icon";
+    copyBtn.dataset.action = "copy";
+    copyBtn.dataset.id = String(entry.id);
+    copyBtn.textContent = "Copy";
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn-icon";
+    deleteBtn.dataset.action = "delete";
+    deleteBtn.dataset.id = String(entry.id);
+    deleteBtn.setAttribute("aria-label", "Delete");
+    deleteBtn.innerHTML = `
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+        <path d="M3 4h10M6.5 4V2.5h3V4M5 4l.5 9a1.5 1.5 0 001.5 1.4h2a1.5 1.5 0 001.5-1.4L11 4"
+          stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(meta);
+    item.appendChild(text);
+    item.appendChild(actions);
+
+    historyList.appendChild(item);
+  }
+}
+
+historyList.addEventListener("click", async (e) => {
+  const target = (e.target as HTMLElement).closest("button.btn-icon") as HTMLButtonElement | null;
+  if (!target) return;
+
+  const action = target.dataset.action;
+  const id = Number(target.dataset.id);
+
+  if (action === "copy") {
+    const item = target.closest(".history-item");
+    const text = item?.querySelector(".history-text")?.textContent ?? "";
+    try {
+      await invoke("copy_history_entry", { text });
+      const original = target.textContent;
+      target.textContent = "Copied";
+      target.disabled = true;
+      setTimeout(() => {
+        target.textContent = original;
+        target.disabled = false;
+      }, 1200);
+    } catch (err) {
+      console.error("Copy failed:", err);
+    }
+  } else if (action === "delete") {
+    try {
+      await invoke("delete_history_entry", { id });
+    } catch (err) {
+      console.error("Delete failed:", err);
+    }
+  }
+});
+
+clearHistoryBtn.addEventListener("click", async () => {
+  if (!confirm("Clear all transcription history?")) return;
+  try {
+    await invoke("clear_history");
+  } catch (err) {
+    console.error("Clear failed:", err);
+  }
+});
+
+listen<HistoryEntry[]>("history-updated", (event) => {
+  renderHistory(event.payload);
+});
+
 // Listen for recording state changes
 listen<string>("recording-state", (event) => {
   const state = event.payload;
@@ -200,3 +347,4 @@ listen<DownloadProgress>("download-progress", (event) => {
 
 // Initialize
 loadSettings();
+loadHistory();

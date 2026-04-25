@@ -103,6 +103,18 @@ impl Recorder {
         // Clean up text
         let cleaned = cleanup_text(&raw_text);
 
+        // Append to history (before paste so the UI reflects the entry even if paste fails)
+        if !cleaned.is_empty() {
+            crate::history::append(app_dir, &cleaned);
+            let entries = if settings.history_ttl_enabled {
+                let ttl_secs = settings.history_ttl_days as u64 * 86_400;
+                crate::history::prune_expired(app_dir, ttl_secs)
+            } else {
+                crate::history::load(app_dir)
+            };
+            let _ = app.emit("history-updated", entries);
+        }
+
         // Auto-paste
         if !cleaned.is_empty() {
             paste_text(&cleaned)?;

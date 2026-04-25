@@ -13,6 +13,14 @@ pub struct Settings {
     #[serde(rename = "recordingMode")]
     pub recording_mode: String,
     pub hotkey: String,
+    #[serde(rename = "historyTtlEnabled", default)]
+    pub history_ttl_enabled: bool,
+    #[serde(rename = "historyTtlDays", default = "default_ttl_days")]
+    pub history_ttl_days: u32,
+}
+
+fn default_ttl_days() -> u32 {
+    30
 }
 
 impl Default for Settings {
@@ -24,6 +32,8 @@ impl Default for Settings {
             groq_api_key: String::new(),
             recording_mode: "toggle".to_string(),
             hotkey: "CmdOrCtrl+Shift+Space".to_string(),
+            history_ttl_enabled: false,
+            history_ttl_days: 30,
         }
     }
 }
@@ -63,6 +73,8 @@ mod tests {
         assert_eq!(settings.groq_api_key, "");
         assert_eq!(settings.recording_mode, "toggle");
         assert_eq!(settings.hotkey, "CmdOrCtrl+Shift+Space");
+        assert_eq!(settings.history_ttl_enabled, false);
+        assert_eq!(settings.history_ttl_days, 30);
     }
 
     #[test]
